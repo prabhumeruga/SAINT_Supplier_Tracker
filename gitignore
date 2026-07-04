@@ -1,0 +1,19 @@
+# Secrets
+.env
+.env.*
+*.key
+
+# Local SQLite database and WAL/SHM files
+*.db
+*.db-wal
+*.db-shm
+saint_data.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
