@@ -24,7 +24,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from bs4 import BeautifulSoup
-from mistralai import Mistral
+# mistralai v2.x moved the client class to a nested module path. The old
+# top-level `from mistralai import Mistral` (v1.x) raises an ImportError
+# on any environment that resolves to a modern mistralai install.
+from mistralai.client import Mistral
 from openai import OpenAI
 
 # =============================================================
