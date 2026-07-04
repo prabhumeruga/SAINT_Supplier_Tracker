@@ -377,44 +377,90 @@ class TickerResolver:
         raw = res.json()  # {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}, ...}
         return list(raw.values())
 
+    # Common corporate-entity suffixes to strip when comparing names loosely --
+    # SEC's directory mixes casing and legal-suffix conventions ("Apple Inc.",
+    # "NVIDIA CORP", "Tesla, Inc.", "Amazon.com, Inc."), so a plain string
+    # comparison misses obvious matches unless these are normalized away.
+    _CORP_SUFFIXES = [
+        ", inc.", ", inc", " inc.", " inc",
+        ", corporation", " corporation", ", corp.", " corp.", ", corp", " corp",
+        ", co.", " co.", ", co", " co",
+        ", ltd.", " ltd.", ", ltd", " ltd",
+        " plc", " llc", ", llc",
+        " holdings", " holding", " group", " company",
+    ]
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        n = " ".join(name.strip().lower().split())  # collapse whitespace, lowercase
+        n = n.rstrip(".,")
+        changed = True
+        while changed:
+            changed = False
+            for suf in TickerResolver._CORP_SUFFIXES:
+                if n.endswith(suf):
+                    n = n[: -len(suf)].rstrip(" ,.")
+                    changed = True
+        return n
+
+    @staticmethod
+    def _to_match(entry):
+        return {
+            "ticker": entry["ticker"],
+            "cik": str(entry["cik_str"]).zfill(10),
+            "title": entry["title"],
+        }
+
     @staticmethod
     def resolve(vendor: str):
         """Returns {"ticker": ..., "cik": <10-digit zero-padded str>, "title": ...}
-        or None if no reasonable match is found."""
+        or None if no reasonable match is found. Matching is case-insensitive
+        throughout and tolerant of legal-suffix differences (e.g. "Apple" vs
+        "Apple Inc.", "Amazon" vs "Amazon.com, Inc.", "Nvidia" vs "NVIDIA CORP")."""
         try:
             directory = TickerResolver._load_ticker_directory()
         except Exception:
             return None
 
-        vendor_norm = vendor.strip().upper()
+        vendor_stripped = vendor.strip()
+        vendor_upper = vendor_stripped.upper()
+        vendor_lower = vendor_stripped.lower()
+        vendor_key = TickerResolver._normalize_name(vendor_stripped)
 
         # 1. Exact ticker match (e.g. user typed "AAPL")
         for entry in directory:
-            if entry.get("ticker", "").upper() == vendor_norm:
-                return {
-                    "ticker": entry["ticker"],
-                    "cik": str(entry["cik_str"]).zfill(10),
-                    "title": entry["title"],
-                }
+            if entry.get("ticker", "").upper() == vendor_upper:
+                return TickerResolver._to_match(entry)
 
-        # 2. Fuzzy match on company title (e.g. user typed "Apple" or "Infosys")
-        titles = [entry["title"] for entry in directory]
-        best = difflib.get_close_matches(vendor.strip(), titles, n=1, cutoff=0.6)
-        if not best:
-            # Looser pass: does any title start with the same word(s)?
-            candidates = [t for t in titles if t.upper().startswith(vendor_norm.split(" ")[0])]
-            best = candidates[:1]
-        if not best:
-            return None
-
-        matched_title = best[0]
+        # 2. Case-insensitive exact title match
         for entry in directory:
-            if entry["title"] == matched_title:
-                return {
-                    "ticker": entry["ticker"],
-                    "cik": str(entry["cik_str"]).zfill(10),
-                    "title": entry["title"],
-                }
+            if entry["title"].lower() == vendor_lower:
+                return TickerResolver._to_match(entry)
+
+        # 3. Exact match after stripping legal suffixes + casing (handles the
+        #    overwhelming majority of real user input: "Apple" -> "Apple Inc.")
+        exact_normalized = [e for e in directory if TickerResolver._normalize_name(e["title"]) == vendor_key]
+        if exact_normalized:
+            return TickerResolver._to_match(exact_normalized[0])
+
+        # 4. Prefix match (handles cases like "Amazon" -> "Amazon.com, Inc."
+        #    where the input isn't the full name minus a simple suffix).
+        #    Prefer the SHORTEST matching title as the closest approximation
+        #    to an exact name, so "Apple" resolves to "Apple Inc." rather than
+        #    an unrelated longer company that happens to start with "Apple".
+        prefix_candidates = [e for e in directory if e["title"].lower().startswith(vendor_lower)]
+        if prefix_candidates:
+            best_entry = min(prefix_candidates, key=lambda e: len(e["title"]))
+            return TickerResolver._to_match(best_entry)
+
+        # 5. Fuzzy match as a last resort (typo tolerance), case-insensitive.
+        lowered_titles = [e["title"].lower() for e in directory]
+        best = difflib.get_close_matches(vendor_lower, lowered_titles, n=1, cutoff=0.6)
+        if best:
+            for entry in directory:
+                if entry["title"].lower() == best[0]:
+                    return TickerResolver._to_match(entry)
+
         return None
 
 
